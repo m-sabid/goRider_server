@@ -4,6 +4,7 @@ const cors = require("cors");
 require("dotenv").config();
 const { MongoClient, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.SECRET_KEY_PAYMENT);
+const nodemailer = require("nodemailer");
 
 const port = process.env.PORT || 3000;
 
@@ -37,6 +38,8 @@ async function run() {
     const usersCollection = client.db("goRider").collection("users");
     const carsCollection = client.db("goRider").collection("cars");
     const paymentCollection = client.db("goRider").collection("payment");
+    const couponCollection = client.db("goRider").collection("coupons");
+
     const pendingRideCollection = client
       .db("goRider")
       .collection("pendingRide");
@@ -244,28 +247,40 @@ async function run() {
     app.post("/payment", async (req, res) => {
       const payment = req.body;
 
-      console.log(payment.rideId)
+      console.log(payment.rideId);
       try {
         const result = await paymentCollection.insertOne(payment);
-    
+
         if (result.insertedCount === 1) {
           // Payment successfully inserted, now delete item from pendingRide collection
-          const deleteResult = await pendingRideCollection.deleteOne({ rideId: payment.rideId });
-    
+          const deleteResult = await pendingRideCollection.deleteOne({
+            rideId: payment.rideId,
+          });
+
           if (deleteResult.deletedCount === 1) {
-            res.json({ success: true, message: "Payment successful. Item deleted from pendingRide." });
+            res.json({
+              success: true,
+              message: "Payment successful. Item deleted from pendingRide.",
+            });
           } else {
-            res.json({ success: false, message: "Payment successful, but failed to delete item from pendingRide." });
+            res.json({
+              success: false,
+              message:
+                "Payment successful, but failed to delete item from pendingRide.",
+            });
           }
         } else {
           res.json({ success: false, message: "Failed to insert payment." });
         }
       } catch (error) {
         console.error("Error occurred:", error);
-        res.status(500).json({ success: false, message: "An error occurred during payment processing." });
+        res.status(500).json({
+          success: false,
+          message: "An error occurred during payment processing.",
+        });
       }
     });
-    
+
     app.get("/payment", async (req, res) => {
       const result = await paymentCollection.find().toArray();
       res.json(result);
@@ -287,7 +302,6 @@ async function run() {
       try {
         const id = req.params.id;
 
-       
         const { status } = req.body;
 
         const filter = { _id: new ObjectId(id) };
@@ -316,17 +330,123 @@ async function run() {
       }
     });
     app.delete("/pending-ride/:id", async (req, res) => {
-
-      console.log("first")
       try {
         const id = req.params.id;
-    
+
         const filter = { _id: new ObjectId(id) };
-    
-        const pendingRideCollection = client.db("goRider").collection("pendingRide");
-    
+
+        const pendingRideCollection = client
+          .db("goRider")
+          .collection("pendingRide");
+
         const result = await pendingRideCollection.deleteOne(filter);
-    
+
+        if (result.deletedCount === 1) {
+          // Document deleted successfully
+          return res.json({ success: true });
+        } else {
+          // Failed to delete the document
+          return res.json({ success: false });
+        }
+      } catch (error) {
+        console.error("Error deleting document from MongoDB:", error);
+        return res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
+
+    // Ride Related Route
+
+    const sendEmailToAllUsers = async (subject, text) => {
+      let transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: "sabidofficial@gmail.com",
+          pass: "lszkondkparrwxsx",
+        },
+      });
+
+      const users = await usersCollection.find().toArray();
+
+      for (const user of users) {
+        let mailOptions = {
+          from: "sabidofficial@gmail.com",
+          to: user.email,
+          subject: subject,
+          text: text,
+        };
+
+        transporter.sendMail(mailOptions, function (error, info) {
+          if (error) {
+            console.log(error);
+          } else {
+            console.log("Email sent: " + info.response);
+          }
+        });
+      }
+    };
+    // coupons apis
+    app.post("/coupons", async (req, res) => {
+      const coupon = req.body;
+
+      try {
+        // Check if a coupon with the same name already exists
+        const existingCoupon = await couponCollection.findOne({
+          name: coupon.name,
+        });
+
+
+        console.log(existingCoupon)
+
+        if (existingCoupon) {
+          return res
+            .status(400)
+            .json({
+              success: false,
+              message: "Coupon with this name already exists.",
+            });
+        }
+
+        const result = await couponCollection.insertOne(coupon);
+
+        if (result.acknowledged === true) {
+          // Coupon successfully inserted, now send email to all users
+          const subject = "New Coupon Available!";
+          const text = `A new coupon code is available. Use code: ${coupon.code} to get ${coupon.discount}% off on your next ride!`;
+
+          sendEmailToAllUsers(subject, text);
+
+          res.json({ success: true, message: "Coupon created successfully." });
+        } else {
+          res.json({ success: false, message: "Failed to insert coupon." });
+        }
+      } catch (error) {
+        console.error("Error creating coupon:", error);
+        return res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
+
+    app.get("/coupons", async (req, res) => {
+      try {
+        const result = await couponCollection.find().toArray();
+        res.json(result);
+      } catch (error) {
+        console.error("Error retrieving coupons:", error);
+        return res.status(500).json({ error: "Internal Server Error" });
+      }
+    });
+
+    app.delete("/coupons/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        const filter = { _id: new ObjectId(id) };
+
+        const couponCollection = client
+          .db("goRider")
+          .collection("coupons");
+
+        const result = await couponCollection.deleteOne(filter);
+
         if (result.deletedCount === 1) {
           // Document deleted successfully
           return res.json({ success: true });
@@ -340,7 +460,8 @@ async function run() {
       }
     });
     
-    // Ride Related Route
+
+    // Coupon Related Apis
 
     app.listen(port, () => {
       console.log(`Server running on port ${port}`);
