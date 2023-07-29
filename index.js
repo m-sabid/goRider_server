@@ -231,7 +231,7 @@ async function run() {
     // Payment Related Api
     app.post("/create-payment-intent", async (req, res) => {
       const { price } = req.body;
-      const amount = price * 100;
+      const amount = Math.round(price * 100);
 
       // Create a PaymentIntent with the order amount and currency
       const paymentIntent = await stripe.paymentIntents.create({
@@ -244,12 +244,62 @@ async function run() {
         clientSecret: paymentIntent.client_secret,
       });
     });
+
+    const sendEmailAfterPayment = async (userEmail, payment) => {
+      let transporter = nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: "sabidofficial@gmail.com",
+          pass: "lszkondkparrwxsx",
+        },
+      });
+
+      const users = await userEmail;
+
+      let paymentDetails = `
+      <table style="border-collapse: collapse; width: 100%;">
+        <tr>
+          <th style="border: 1px solid #dddddd; text-align: left; padding: 8px;">Price</th>
+          <th style="border: 1px solid #dddddd; text-align: left; padding: 8px;">Car Name</th>
+          <th style="border: 1px solid #dddddd; text-align: left; padding: 8px;">Vehicle Type</th>
+          <th style="border: 1px solid #dddddd; text-align: left; padding: 8px;">Driver Name</th>
+          <th style="border: 1px solid #dddddd; text-align: left; padding: 8px;">Transaction Id</th>
+          <th style="border: 1px solid #dddddd; text-align: left; padding: 8px;"> Distance</th>
+        </tr>
+        <tr>
+          <td style="border: 1px solid #dddddd; text-align: left; padding: 8px;">${payment.price}</td>
+          <td style="border: 1px solid #dddddd; text-align: left; padding: 8px;">${payment.carName}</td>
+          <td style="border: 1px solid #dddddd; text-align: left; padding: 8px;">${payment.vehicleType}</td>
+          <td style="border: 1px solid #dddddd; text-align: left; padding: 8px;">${payment.driverName}</td>
+          <td style="border: 1px solid #dddddd; text-align: left; padding: 8px;">${payment.transactionId}</td>
+          <td style="border: 1px solid #dddddd; text-align: left; padding: 8px;">${payment.distance}km</td>
+        </tr>
+      </table>
+    `;
+
+      let mailOptions = {
+        from: "sabidofficial@gmail.com",
+        to: users,
+        subject: "Payment successful: Have a nice day!",
+        html: `<p>Thank you for your payment! Here are the payment details:</p>${paymentDetails}`,
+      };
+
+      try {
+        const info = await transporter.sendMail(mailOptions);
+        console.log("Email sent: " + info.response);
+      } catch (error) {
+        console.log(error);
+      }
+    };
+
     app.post("/payment", async (req, res) => {
       const payment = req.body;
+      const userEmail = payment.userEmail;
 
-      console.log(payment.rideId);
+      console.log(userEmail);
       try {
         const result = await paymentCollection.insertOne(payment);
+        sendEmailAfterPayment(userEmail, payment);
 
         if (result.insertedCount === 1) {
           // Payment successfully inserted, now delete item from pendingRide collection
@@ -298,16 +348,18 @@ async function run() {
       const result = await pendingRideCollection.find().toArray();
       res.json(result);
     });
+
     app.patch("/pending-ride/:id", async (req, res) => {
       try {
         const id = req.params.id;
-
-        const { status } = req.body;
+        const { status, totalPrice, isCouponUsed } = req.body;
 
         const filter = { _id: new ObjectId(id) };
         const updateDoc = {
           $set: {
             status: status,
+            totalPrice: totalPrice,
+            isCouponUsed: isCouponUsed,
           },
         };
 
@@ -318,17 +370,18 @@ async function run() {
         const result = await pendingRideCollection.updateOne(filter, updateDoc);
 
         if (result.modifiedCount === 1) {
-          // Role updated successfully
+          // Ride updated successfully
           return res.json({ success: true });
         } else {
-          // Failed to update the role
+          // Failed to update the ride
           return res.json({ success: false });
         }
       } catch (error) {
-        console.error("Error updating user role in MongoDB:", error);
+        console.error("Error updating ride in MongoDB:", error);
         return res.status(500).json({ error: "Internal Server Error" });
       }
     });
+
     app.delete("/pending-ride/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -384,6 +437,7 @@ async function run() {
         });
       }
     };
+
     // coupons apis
     app.post("/coupons", async (req, res) => {
       const coupon = req.body;
@@ -394,16 +448,13 @@ async function run() {
           name: coupon.name,
         });
 
-
-        console.log(existingCoupon)
+        console.log(existingCoupon);
 
         if (existingCoupon) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              message: "Coupon with this name already exists.",
-            });
+          return res.status(400).json({
+            success: false,
+            message: "Coupon with this name already exists.",
+          });
         }
 
         const result = await couponCollection.insertOne(coupon);
@@ -426,9 +477,25 @@ async function run() {
     });
 
     app.get("/coupons", async (req, res) => {
+      const couponName = req.query.name;
+
       try {
-        const result = await couponCollection.find().toArray();
-        res.json(result);
+        if (couponName) {
+          // Fetch a specific coupon by name
+          const coupon = await couponCollection.findOne({ name: couponName });
+
+          if (!coupon) {
+            return res
+              .status(404)
+              .json({ success: false, message: "Coupon not found." });
+          }
+
+          res.json(coupon);
+        } else {
+          // Fetch all coupons
+          const result = await couponCollection.find().toArray();
+          res.json(result);
+        }
       } catch (error) {
         console.error("Error retrieving coupons:", error);
         return res.status(500).json({ error: "Internal Server Error" });
@@ -441,9 +508,7 @@ async function run() {
 
         const filter = { _id: new ObjectId(id) };
 
-        const couponCollection = client
-          .db("goRider")
-          .collection("coupons");
+        const couponCollection = client.db("goRider").collection("coupons");
 
         const result = await couponCollection.deleteOne(filter);
 
@@ -459,7 +524,6 @@ async function run() {
         return res.status(500).json({ error: "Internal Server Error" });
       }
     });
-    
 
     // Coupon Related Apis
 
